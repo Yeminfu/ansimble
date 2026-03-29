@@ -1,0 +1,127 @@
+---
+- name: Install NVM (Node Version Manager)
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    nvm_version: "0.39.7"
+    nvm_user: "{{ ansible_user_id }}"
+    nvm_user_home: "{{ ansible_env.HOME }}"
+    nvm_dir: "{{ ansible_env.HOME }}/.nvm"
+    
+  tasks:
+    # ========================================================================
+    # 1. ПОДГОТОВКА
+    # ========================================================================
+    
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: [prepare]
+    
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - git
+          - build-essential
+        state: present
+      tags: [prepare]
+    
+    # ========================================================================
+    # 2. УСТАНОВКА NVM
+    # ========================================================================
+    
+    - name: Check if NVM is already installed
+      stat:
+        path: "{{ nvm_dir }}/nvm.sh"
+      register: nvm_installed
+      tags: [nvm]
+    
+    - name: Download and install NVM
+      shell: |
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v{{ nvm_version }}/install.sh | bash
+      args:
+        creates: "{{ nvm_dir }}/nvm.sh"
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_user_home }}"
+      tags: [nvm]
+    
+    # ========================================================================
+    # 3. НАСТРОЙКА ОКРУЖЕНИЯ
+    # ========================================================================
+    
+    - name: Add NVM to .bashrc
+      lineinfile:
+        path: "{{ nvm_user_home }}/.bashrc"
+        line: "{{ item }}"
+        create: yes
+        owner: "{{ nvm_user }}"
+        group: "{{ nvm_user }}"
+        mode: '0644'
+      loop:
+        - 'export NVM_DIR="$HOME/.nvm"'
+        - '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"'
+        - '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"'
+      become_user: "{{ nvm_user }}"
+      tags: [nvm, config]
+    
+    - name: Add NVM to .zshrc if zsh is used
+      lineinfile:
+        path: "{{ nvm_user_home }}/.zshrc"
+        line: "{{ item }}"
+        create: yes
+        owner: "{{ nvm_user }}"
+        group: "{{ nvm_user }}"
+        mode: '0644'
+      loop:
+        - 'export NVM_DIR="$HOME/.nvm"'
+        - '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"'
+        - '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"'
+      become_user: "{{ nvm_user }}"
+      when: ansible_shell is defined and 'zsh' in ansible_shell
+      tags: [nvm, config]
+    
+    # ========================================================================
+    # 4. ПРОВЕРКА
+    # ========================================================================
+    
+    - name: Verify NVM installation
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm --version
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_user_home }}"
+      register: nvm_version_check
+      changed_when: false
+      failed_when: false
+      tags: [verify]
+    
+    # ========================================================================
+    # 5. ОТЧЁТ
+    # ========================================================================
+    
+    - name: Show NVM installation summary
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════╗
+          ✅ NVM INSTALLATION COMPLETE!
+          ╠════════════════════════════════════════════════════╣
+          
+          👤 User: {{ nvm_user }}
+          📁 NVM Dir: {{ nvm_dir }}
+          🔧 NVM Version: {{ nvm_version_check.stdout | default('N/A') }}
+          
+          ⚡ Next steps:
+          • Reconnect SSH or run: source ~/.bashrc
+          • Install Node.js: nvm install --lts
+          • List versions: nvm list
+          • Use version: nvm use <version>
+          
+          ╚════════════════════════════════════════════════════╝
+      tags: [summary]

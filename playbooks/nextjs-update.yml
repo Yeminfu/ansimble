@@ -1,0 +1,75 @@
+# nextjs-deploy-fixed.yml
+---
+- name: Deploy Next.js Application with PM2
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    git_repo: "https://github.com/user/project-name.git"
+    git_branch: "main"
+    app_dir: /var/www/nextjs-app
+    nodejs_version: "20.x"
+    pm2_app_name: "nextjs-app"
+    app_port: 3000
+    app_user: www-data
+    nvm_user: "{{ ansible_user_id }}"
+    nvm_home: "{{ ansible_env.HOME }}"
+
+    
+  tasks:
+   
+    # # 4. Git clone
+    - name: Clone Next.js application from Git
+      git:
+        repo: "{{ git_repo }}"
+        dest: "{{ app_dir }}"
+        version: "{{ git_branch }}"
+        force: yes
+      tags: [git]
+    
+    # # 5. npm install
+    - name: Install npm dependencies
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        npm install --legacy-peer-deps
+      args:
+        chdir: "{{ app_dir }}"
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ ansible_env.HOME }}"
+    
+    # 6. Build
+    - name: Build Next.js application
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm use {{ nodejs_version }}
+        npm run build
+      args:
+        chdir: "{{ app_dir }}"
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_home }}"
+        NODE_ENV: production
+      tags: [build]
+      ignore_errors: yes
+    
+    # # 7. PM2 start
+    # - name: Start app with PM2
+    #   command: pm2 start npm --name "{{ pm2_app_name }}" -- start
+    #   args:
+    #     chdir: "{{ app_dir }}"
+    #   environment:
+    #     NODE_ENV: production
+    #     PORT: "{{ app_port }}"
+    #   tags: [pm2]
+    
+    # 8. Проверка
+    - name: Show summary
+      debug:
+        msg: |
+          ✅ Deployed: {{ git_repo }}@{{ git_branch }}
+          🌐 URL: http://{{ ansible_default_ipv4.address }}:{{ app_port }}
+      tags: [summary]

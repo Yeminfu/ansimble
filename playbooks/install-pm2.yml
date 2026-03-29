@@ -1,0 +1,29 @@
+# nextjs-deploy-fixed.yml
+---
+- name: Deploy Next.js Application with PM2
+  hosts: all
+  become: true
+  gather_facts: true    
+  vars:
+    git_repo: "https://github.com/user/project-name.git"
+    git_branch: "main"
+    app_dir: /var/www/nextjs-app
+    nodejs_version: "20.x"
+    pm2_app_name: "nextjs-app"
+    app_port: 3000
+    app_user: www-data
+    nvm_user: "{{ ansible_user_id }}"
+    nvm_home: "{{ ansible_env.HOME }}"
+
+    
+  tasks:
+    - name: Install PM2 globally
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        npm install -g pm2
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_home }}"
+      tags: [install]
+    

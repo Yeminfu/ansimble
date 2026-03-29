@@ -1,0 +1,351 @@
+# ssl-setup-cod94n-fixed.yml
+---
+- name: Setup SSL Certificate for site.name (Fixed)
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    domain_name: "site.name"
+    domain_www: "www.site.name"
+    ssl_email: "admin@site.name"
+    nginx_sites_available: /etc/nginx/sites-available
+    nginx_sites_enabled: /etc/nginx/sites-enabled
+    certbot_webroot: /var/www/certbot
+    app_port: 3000
+    app_host: "127.0.0.1"
+    
+  tasks:
+    # ========================================================================
+    # ШАГ 1: Проверить DNS
+    # ========================================================================
+    
+    # - name: 🔍 Checking DNS for {{ domain_name }}
+    #   debug:
+    #     msg: "🔍 Checking DNS for {{ domain_name }}..."
+    #   tags: [dns, check]
+    
+    # - name: Query DNS
+    #   command: dig +short {{ domain_name }}
+    #   register: dns_result
+    #   changed_when: false
+    #   failed_when: false
+    #   tags: [dns, check]
+    
+    # - name: Show DNS result
+    #   debug:
+    #     msg: |
+    #       ✅ DNS: {{ domain_name }} → {{ dns_result.stdout | default('NOT RESOLVED') }}
+    #   tags: [dns, check]
+    
+    # # ========================================================================
+    # # ШАГ 2: Остановить Nginx (ИСПРАВЛЕНО)
+    # # ========================================================================
+    
+    # - name: 🛑 Stopping Nginx...
+    #   debug:
+    #     msg: "🛑 Stopping Nginx..."
+    #   tags: [nginx, certbot]
+    
+    # - name: Stop Nginx service
+    #   systemd:
+    #     name: nginx
+    #     state: stopped
+    #   tags: [nginx, certbot]
+    
+    # - name: Brief pause for port release
+    #   wait_for:
+    #     timeout: 3
+    #   tags: [nginx, certbot]
+    
+    # - name: Check if port 80 is free
+    #   shell: ss -tlnp | grep ':80 ' || echo "FREE"
+    #   register: port_status
+    #   changed_when: false
+    #   failed_when: false
+    #   tags: [nginx, certbot]
+    
+    # - name: Warn if port still busy
+    #   debug:
+    #     msg: |
+    #       {% if 'FREE' not in port_status.stdout %}
+    #       ⚠️ Port 80 may still be in use. Certbot will handle this.
+    #       Current listeners: {{ port_status.stdout }}
+    #       {% else %}
+    #       ✅ Port 80 is free
+    #       {% endif %}
+    #   tags: [nginx, certbot]
+    
+    # # ========================================================================
+    # # ШАГ 3: Получить сертификат (standalone)
+    # # ========================================================================
+    
+    # - name: 🔐 Requesting certificate for {{ domain_name }}...
+    #   debug:
+    #     msg: "🔐 Requesting certificate for {{ domain_name }}..."
+    #   tags: [certbot]
+    
+    # - name: Ensure certbot is installed
+    #   apt:
+    #     name: certbot
+    #     state: present
+    #     update_cache: yes
+    #   tags: [certbot]
+
+
+    - name: Stop Nginx to free port 80
+      systemd:
+        name: nginx
+        state: stopped
+      tags: [certbot]
+
+    - name: Wait for port 80 to be released
+      wait_for:
+        port: 80
+        state: drained
+        timeout: 10
+      ignore_errors: yes  # Игнорировать если порт уже свободен
+      tags: [certbot]
+
+    - name: Obtain SSL certificate via standalone mode
+      command: >
+        certbot certonly --standalone
+        --agree-tos
+        --email admin@site.name
+        --non-interactive
+        -d site.name
+      args:
+        creates: "/etc/letsencrypt/live/site.name/fullchain.pem"
+      register: certbot_result
+      tags: [certbot]
+
+    - name: Start Nginx after certificate obtained
+      systemd:
+        name: nginx
+        state: started
+      tags: [certbot]
+    
+    - name: Obtain SSL certificate via standalone mode
+      command: >
+        certbot certonly --standalone
+        --agree-tos
+        --email {{ ssl_email }}
+        --non-interactive
+        -d {{ domain_name }}
+      args:
+        creates: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
+      register: certbot_result
+      retries: 1
+      delay: 5
+      tags: [certbot]
+    
+    - name: Show certbot result
+      debug:
+        msg: |
+          {% if certbot_result.rc == 0 %}
+          ✅ Certificate obtained successfully!
+          {% else %}
+          ❌ Certbot failed. Check: sudo tail -20 /var/log/letsencrypt/letsencrypt.log
+          Common causes:
+          • Port 80 still in use
+          • DNS not pointing to this server
+          • Rate limit exceeded
+          {% endif %}
+      tags: [certbot]
+    
+    # ========================================================================
+    # ШАГ 4: Проверить результат
+    # ========================================================================
+    
+    - name: 📋 Checking certificates...
+      command: certbot certificates
+      register: cert_list
+      changed_when: false
+      failed_when: false
+      tags: [certbot, verify]
+    
+    - name: Show certificate list
+      debug:
+        var: cert_list.stdout
+      tags: [certbot, verify]
+    
+    # ========================================================================
+    # ШАГ 5: Запустить Nginx
+    # ========================================================================
+    
+    - name: 🚀 Starting Nginx...
+      debug:
+        msg: "🚀 Starting Nginx..."
+      tags: [nginx]
+    
+    - name: Start Nginx service
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+      tags: [nginx]
+    
+    # ========================================================================
+    # ШАГ 6: Создать Nginx конфиг с SSL
+    # ========================================================================
+    
+    - name: ⚙️ Creating Nginx config...
+      debug:
+        msg: "⚙️ Creating Nginx config..."
+      tags: [nginx, config]
+    
+    - name: Ensure directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ nginx_sites_available }}"
+        - "{{ nginx_sites_enabled }}"
+        - "{{ certbot_webroot }}/.well-known/acme-challenge"
+      tags: [nginx, config]
+    
+    - name: Create Nginx config with SSL
+      copy:
+        content: |
+          # HTTP → HTTPS redirect
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name {{ domain_name }} {{ domain_www }};
+              
+              location ^~ /.well-known/acme-challenge/ {
+                  alias {{ certbot_webroot }}/.well-known/acme-challenge/;
+                  default_type "text/plain";
+              }
+              
+              location / {
+                  return 301 https://$server_name$request_uri;
+              }
+          }
+          
+          # HTTPS server
+          server {
+              listen 443 ssl http2;
+              listen [::]:443 ssl http2;
+              server_name {{ domain_name }};
+              
+              ssl_certificate /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ domain_name }}/privkey.pem;
+              
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_ciphers HIGH:!aNULL:!MD5;
+              ssl_stapling on;
+              ssl_stapling_verify on;
+              
+              add_header Strict-Transport-Security "max-age=31536000" always;
+              
+              location / {
+                  proxy_pass http://{{ app_host }}:{{ app_port }};
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+        dest: "{{ nginx_sites_available }}/{{ domain_name }}.conf"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      notify: Reload Nginx
+      tags: [nginx, config]
+    
+    # ========================================================================
+    # ШАГ 7: Включить конфиг
+    # ========================================================================
+    
+    - name: 🔄 Enabling config...
+      debug:
+        msg: "🔄 Enabling config..."
+      tags: [nginx, config]
+    
+    - name: Enable site
+      file:
+        src: "{{ nginx_sites_available }}/{{ domain_name }}.conf"
+        dest: "{{ nginx_sites_enabled }}/{{ domain_name }}.conf"
+        state: link
+      notify: Reload Nginx
+      tags: [nginx, config]
+    
+    - name: Remove default site
+      file:
+        path: "{{ nginx_sites_enabled }}/default"
+        state: absent
+      ignore_errors: yes
+      tags: [nginx, config]
+    
+    - name: Test Nginx config
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+      failed_when: nginx_test.rc != 0
+      tags: [nginx, verify]
+    
+    # ========================================================================
+    # ШАГ 8: Проверить HTTPS
+    # ========================================================================
+    
+    - name: ✅ Testing HTTPS...
+      debug:
+        msg: "✅ Testing HTTPS..."
+      tags: [verify]
+    
+    - name: Test HTTPS (ignore SSL verify)
+      uri:
+        url: "https://{{ domain_name }}"
+        method: HEAD
+        validate_certs: no
+        status_code: [200, 301, 302, 404, 502]
+      register: https_test
+      failed_when: false
+      changed_when: false
+      tags: [verify]
+    
+    - name: Show HTTPS result
+      debug:
+        msg: |
+          🔍 HTTPS test: Status {{ https_test.status | default('N/A') }}
+          {% if https_test.status in [200, 301, 302] %}
+          ✅ HTTPS working!
+          {% elif https_test.status == 404 %}
+          ⚠️ HTTPS works but app not found at root
+          {% elif https_test.status == 502 %}
+          ⚠️ HTTPS works but backend (Next.js) not responding
+          {% else %}
+          ⚠️ HTTPS may not be ready yet
+          {% endif %}
+      tags: [verify]
+    
+    # ========================================================================
+    # ФИНАЛЬНЫЙ ОТЧЁТ
+    # ========================================================================
+    
+    - name: Show completion summary
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════╗
+          ✅ SSL SETUP COMPLETE!
+          ╠════════════════════════════════════════════════════╣
+          
+          🌐 https://{{ domain_name }} — проверьте в браузере
+          📋 Certificates:
+          {{ cert_list.stdout | default('N/A') }}
+          
+          ⚡ If 502 error: check Next.js is running (pm2 status)
+          ⚡ If certbot failed: check DNS and logs
+          
+          ╚════════════════════════════════════════════════════╝
+      tags: [summary]
+      
+  handlers:
+    - name: Reload Nginx
+      systemd:
+        name: nginx
+        state: reloaded

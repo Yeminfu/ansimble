@@ -1,0 +1,386 @@
+---
+- name: Start Next.js Application with PM2
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    # === Пользователь и пути ===
+    app_user: "{{ ansible_user_id }}"
+    app_user_home: "{{ ansible_env.HOME }}"
+    nvm_dir: "{{ ansible_env.HOME }}/.nvm"
+    
+    # === Приложение ===
+    app_name: "nextjs-app"
+    app_dir: /var/www/nextjs-app
+    app_port: 3000
+    node_version: "20.x"
+    
+    # === Git (опционально) ===
+    git_repo: ""  # Заполните, если нужно клонировать: "https://github.com/user/repo.git"
+    git_branch: "main"
+    
+    # === PM2 настройки ===
+    pm2_instances: 1
+    pm2_memory: "512M"
+    pm2_log_file: "/var/log/pm2/{{ app_name }}.log"
+    pm2_error_file: "/var/log/pm2/{{ app_name }}-error.log"
+    
+    # === Окружение ===
+    node_env: "production"
+    env_vars:
+      NODE_ENV: "{{ node_env }}"
+      PORT: "{{ app_port }}"
+      # Добавьте свои переменные:
+      # DATABASE_URL: "postgresql://..."
+      # API_KEY: "{{ vault_api_key }}"
+      
+  tasks:
+    # ========================================================================
+    # 1. ПРОВЕРКА ПРЕДВАРИТЕЛЬНЫХ УСЛОВИЙ
+    # ========================================================================
+    
+    - name: Check if NVM is installed
+      stat:
+        path: "{{ nvm_dir }}/nvm.sh"
+      register: nvm_check
+      tags: [check, prepare]
+    
+    - name: Fail if NVM not installed
+      fail:
+        msg: |
+          ❌ NVM is not installed!
+          Please install NVM first or use system Node.js
+      when: not nvm_check.stat.exists
+      tags: [check, prepare]
+    
+    - name: Check if app directory exists
+      stat:
+        path: "{{ app_dir }}/package.json"
+      register: app_check
+      tags: [check]
+    
+    - name: Warn if app not found
+      debug:
+        msg: |
+          ⚠️ App directory {{ app_dir }} not found or package.json missing
+          {% if git_repo %}
+          Will clone from {{ git_repo }}
+          {% else %}
+          Please ensure app is deployed to {{ app_dir }}
+          {% endif %}
+      when: not app_check.stat.exists
+      tags: [check]
+    
+    # ========================================================================
+    # 2. КЛОНИРОВАНИЕ ПРИЛОЖЕНИЯ (если нужно)
+    # ========================================================================
+    
+    # - name: Clone application from Git
+    #   git:
+    #     repo: "{{ git_repo }}"
+    #     dest: "{{ app_dir }}"
+    #     version: "{{ git_branch }}"
+    #     force: yes
+    #   become_user: "{{ app_user }}"
+    #   when: git_repo != "" and not app_check.stat.exists
+    #   tags: [git]
+    
+    # - name: Ensure app directory permissions
+    #   file:
+    #     path: "{{ app_dir }}"
+    #     state: directory
+    #     owner: "{{ app_user }}"
+    #     group: "{{ app_user }}"
+    #     mode: '0755'
+    #     recurse: yes
+    #   tags: [git]
+    
+    # ========================================================================
+    # 3. УСТАНОВКА ЗАВИСИМОСТЕЙ
+    # ========================================================================
+    
+    # - name: Install npm dependencies
+    #   shell: |
+    #     export NVM_DIR="$HOME/.nvm"
+    #     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    #     nvm use {{ node_version }}
+    #     npm ci --production
+    #   args:
+    #     chdir: "{{ app_dir }}"
+    #   become_user: "{{ app_user }}"
+    #   environment:
+    #     HOME: "{{ app_user_home }}"
+    #   register: npm_install
+    #   tags: [npm]
+    
+    # ========================================================================
+    # 4. СБОРКА ПРИЛОЖЕНИЯ (Next.js build)
+    # ========================================================================
+    
+    # - name: Check if build script exists
+    #   command: grep -q '"build"' package.json
+    #   args:
+    #     chdir: "{{ app_dir }}"
+    #   register: build_script_check
+    #   failed_when: false
+    #   changed_when: false
+    #   tags: [build]
+    
+    # - name: Build Next.js application
+    #   shell: |
+    #     export NVM_DIR="$HOME/.nvm"
+    #     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    #     nvm use {{ node_version }}
+    #     npm run build
+    #   args:
+    #     chdir: "{{ app_dir }}"
+    #   become_user: "{{ app_user }}"
+    #   environment:
+    #     HOME: "{{ app_user_home }}"
+    #     NODE_ENV: production
+    #   when: build_script_check.rc == 0
+    #   tags: [build]
+    #   ignore_errors: yes  # Не все Next.js проекты требуют build
+    
+    # ========================================================================
+    # 5. УСТАНОВКА PM2 (если не установлен)
+    # ========================================================================
+    
+    # - name: Check if PM2 is installed
+    #   shell: |
+    #     export NVM_DIR="$HOME/.nvm"
+    #     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    #     which pm2
+    #   become_user: "{{ app_user }}"
+    #   environment:
+    #     HOME: "{{ app_user_home }}"
+    #   register: pm2_check
+    #   failed_when: false
+    #   changed_when: false
+    #   tags: [pm2]
+    
+    # - name: Install PM2 globally
+    #   shell: |
+    #     export NVM_DIR="$HOME/.nvm"
+    #     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    #     npm install -g pm2
+    #   become_user: "{{ app_user }}"
+    #   environment:
+    #     HOME: "{{ app_user_home }}"
+    #   when: pm2_check.rc != 0
+    #   tags: [pm2]
+    
+    # ========================================================================
+    # 6. СОЗДАНИЕ PM2 ЭКОСИСТЕМЫ
+    # ========================================================================
+    
+    - name: Create PM2 log directory
+      file:
+        path: /var/log/pm2
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+      tags: [pm2, config]
+    
+    - name: Create PM2 ecosystem config
+      copy:
+        content: |
+          module.exports = {
+            apps: [{
+              name: "{{ app_name }}",
+              script: "npm",
+              args: "start",
+              cwd: "{{ app_dir }}",
+              instances: {{ pm2_instances }},
+              exec_mode: "{{ 'cluster' if pm2_instances > 1 else 'fork' }}",
+              env: {
+                NODE_ENV: "{{ node_env }}",
+                PORT: {{ app_port }}
+                {% for key, value in env_vars.items() %}
+                {% if key not in ['NODE_ENV', 'PORT'] %}
+                , {{ key }}: "{{ value }}"
+                {% endif %}
+                {% endfor %}
+              },
+              error_file: "{{ pm2_error_file }}",
+              out_file: "{{ pm2_log_file }}",
+              log_file: "{{ pm2_log_file }}",
+              time: true,
+              merge_logs: true,
+              autorestart: true,
+              restart_delay: 4000,
+              max_memory_restart: "{{ pm2_memory }}",
+              watch: false,
+              ignore_watch: ["node_modules", ".next", "logs"],
+              max_restarts: 10,
+              min_uptime: "10s"
+            }]
+          };
+        dest: "{{ app_dir }}/ecosystem.config.js"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+        backup: yes
+      tags: [pm2, config]
+    
+    # ========================================================================
+    # 7. ЗАПУСК ПРИЛОЖЕНИЯ ЧЕРЕЗ PM2
+    # ========================================================================
+    
+    - name: Check if PM2 app already exists
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        pm2 describe {{ app_name }}
+      become_user: "{{ app_user }}"
+      environment:
+        HOME: "{{ app_user_home }}"
+      register: pm2_app_exists
+      failed_when: false
+      changed_when: false
+      tags: [pm2, start]
+    
+    - name: Start Next.js app with PM2 (new)
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        pm2 start ecosystem.config.js
+      args:
+        chdir: "{{ app_dir }}"
+      become_user: "{{ app_user }}"
+      environment:
+        HOME: "{{ app_user_home }}"
+      when: pm2_app_exists.rc != 0
+      tags: [pm2, start]
+    
+    - name: Restart Next.js app with PM2 (existing)
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        pm2 restart {{ app_name }}
+      become_user: "{{ app_user }}"
+      environment:
+        HOME: "{{ app_user_home }}"
+      when: pm2_app_exists.rc == 0
+      tags: [pm2, start]
+    
+    - name: Wait for application to be ready
+      wait_for:
+        port: "{{ app_port }}"
+        host: "127.0.0.1"
+        timeout: 60
+      tags: [pm2, verify]
+    
+    # ========================================================================
+    # 8. НАСТРОЙКА АВТОЗАПУСКА ПРИ ПЕРЕЗАГРУЗКЕ
+    # ========================================================================
+    
+    - name: Save PM2 process list
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        pm2 save
+      become_user: "{{ app_user }}"
+      environment:
+        HOME: "{{ app_user_home }}"
+      tags: [pm2, startup]
+    
+    - name: Generate PM2 startup script
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        pm2 startup systemd -u {{ app_user }} --hp {{ app_user_home }}
+      become_user: "{{ app_user }}"
+      environment:
+        HOME: "{{ app_user_home }}"
+      register: pm2_startup
+      changed_when: "'[PM2] Init System found' not in pm2_startup.stdout"
+      tags: [pm2, startup]
+      ignore_errors: yes
+    
+    - name: Show PM2 startup instructions
+      debug:
+        msg: |
+          ⚡ PM2 startup command generated. If needed, run:
+          {{ pm2_startup.stdout_lines | select('match', '^\\[PM2\\]') | list | first | default('No command needed') }}
+      when: pm2_startup.changed
+      tags: [pm2, startup]
+    
+    # ========================================================================
+    # 9. ПРОВЕРКИ
+    # ========================================================================
+    
+    - name: Get PM2 status
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        pm2 describe {{ app_name }} --no-color
+      become_user: "{{ app_user }}"
+      environment:
+        HOME: "{{ app_user_home }}"
+      register: pm2_status
+      changed_when: false
+      failed_when: false
+      tags: [verify]
+    
+    - name: Show PM2 status
+      debug:
+        msg: |
+          📊 PM2 Status for {{ app_name }}:
+          {{ pm2_status.stdout | default('Not found') }}
+      tags: [verify]
+    
+    - name: Test application health
+      uri:
+        url: "http://127.0.0.1:{{ app_port }}/health"
+        method: GET
+        status_code: [200, 404, 502]
+      register: health_check
+      failed_when: false
+      changed_when: false
+      tags: [verify]
+    
+    - name: Show health check result
+      debug:
+        msg: |
+          🔍 Health check: http://127.0.0.1:{{ app_port }}/health
+          Status: {{ health_check.status | default('N/A') }}
+          {% if health_check.status in [200, 404] %}
+          ✅ Application is responding!
+          {% elif health_check.status == 502 %}
+          ⚠️ Application may still be starting
+          {% else %}
+          ⚠️ Health check not available
+          {% endif %}
+      tags: [verify]
+    
+    # ========================================================================
+    # 10. ФИНАЛЬНЫЙ ОТЧЁТ
+    # ========================================================================
+    
+    - name: Show deployment summary
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════╗
+          ✅ NEXT.JS + PM2 STARTUP COMPLETE!
+          ╠════════════════════════════════════════════════════╣
+          
+          📦 App: {{ app_name }}
+          📁 Directory: {{ app_dir }}
+          🌐 URL: http://{{ ansible_default_ipv4.address | default('localhost') }}:{{ app_port }}
+          📊 PM2 Status: {{ 'online' if pm2_status.rc == 0 else 'check manually' }}
+          📝 Logs: {{ pm2_log_file }}
+          ❌ Errors: {{ pm2_error_file }}
+          
+          ⚡ Useful PM2 commands:
+          • pm2 status
+          • pm2 logs {{ app_name }}
+          • pm2 restart {{ app_name }}
+          • pm2 stop {{ app_name }}
+          • pm2 delete {{ app_name }}
+          • pm2 monit
+          
+          ╚════════════════════════════════════════════════════╝
+      tags: [summary]

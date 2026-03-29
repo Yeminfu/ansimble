@@ -1,0 +1,97 @@
+# pgadmin-unlock.yml
+---
+- name: Unlock pgAdmin Account
+  hosts: all
+  become: true
+  
+  vars:
+    pgadmin_container_name: "pgadmin4"
+    pgadmin_data_dir: "/opt/pgadmin/data"
+    
+  tasks:
+    # ========================================================================
+    # 1. Проверка что контейнер запущен
+    # ========================================================================
+    
+    - name: Check container is running
+      command: docker ps --filter name={{ pgadmin_container_name }} --format "{{"{{.Status}}"}}"
+      register: container_status
+      tags: [check]
+    
+    - name: Show container status
+      debug:
+        msg: "Container: {{ container_status.stdout }}"
+      tags: [check]
+    
+    # ========================================================================
+    # 2. Сброс сессий и кэша pgAdmin
+    # ========================================================================
+    
+    - name: Stop pgAdmin container
+      docker_container:
+        name: "{{ pgadmin_container_name }}"
+        state: stopped
+      tags: [unlock]
+    
+    - name: Remove session files (unlock accounts)
+      shell: |
+        rm -rf {{ pgadmin_data_dir }}/sessions/*
+        rm -f {{ pgadmin_data_dir }}/storage.sqlite
+        rm -f {{ pgadmin_data_dir }}/pgadmin4.db
+      tags: [unlock]
+    
+    - name: Fix permissions
+      file:
+        path: "{{ pgadmin_data_dir }}"
+        state: directory
+        mode: '0777'
+        recurse: yes
+      tags: [unlock]
+    
+    - name: Start pgAdmin container
+      docker_container:
+        name: "{{ pgadmin_container_name }}"
+        state: started
+      tags: [unlock]
+    
+    # ========================================================================
+    # 3. Проверка
+    # ========================================================================
+    
+    - name: Wait for pgAdmin to start
+      wait_for:
+        timeout: 15
+      tags: [verify]
+    
+    - name: Test HTTP connection
+      uri:
+        url: "http://localhost:5050/misc/ping"
+        method: GET
+        status_code: [200, 302, 403]
+      register: http_test
+      failed_when: false
+      tags: [verify]
+    
+    - name: Show unlock status
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════╗
+          {% if http_test.status | default(0) in [200, 302, 403] %}
+          ✅ pgAdmin account lock RESET!
+          {% else %}
+          ⚠️ Check container logs
+          {% endif %}
+          ╠════════════════════════════════════════════════════╣
+          
+          🔄 Try login again:
+          URL: http://{{ ansible_default_ipv4.address }}:5050
+          Email: admin@site.name
+          Password: SimplePass123
+          
+          💡 Tips:
+          • Use incognito mode
+          • Clear browser cookies
+          • Wait 15 minutes for auto-unlock
+          
+          ╚════════════════════════════════════════════════════╝
+      tags: [summary]

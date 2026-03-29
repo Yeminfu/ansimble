@@ -1,0 +1,245 @@
+# postgresql-pgadmin.yml
+---
+- name: Setup PostgreSQL + pgAdmin
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    postgres_password: "PostgresPass123!"
+    pgadmin_port: 5050
+    pgadmin_email: "admin@site.name"
+    pgadmin_password: "poiuy09876"
+    
+  tasks:
+    # ========================================================================
+    # 1. Обновление кэша
+    # ========================================================================
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: [always]
+    
+    # ========================================================================
+    # 2. Установка PostgreSQL
+    # ========================================================================
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2
+          - python3-pexpect
+        state: present
+      tags: [postgresql]
+    
+    # ========================================================================
+    # 3. Найти версию PostgreSQL (ДИНАМИЧЕСКИ)
+    # ========================================================================
+    - name: Get PostgreSQL version
+      shell: ls /etc/postgresql/ | head -1
+      register: pg_version
+      changed_when: false
+      failed_when: pg_version.stdout == ""
+      tags: [postgresql, config]
+    
+    - name: Show PostgreSQL version
+      debug:
+        msg: "✅ PostgreSQL version: {{ pg_version.stdout }}"
+      tags: [postgresql, config]
+    
+    # ========================================================================
+    # 4. Настройка postgresql.conf
+    # ========================================================================
+    - name: Configure listen_addresses
+      lineinfile:
+        path: "/etc/postgresql/{{ pg_version.stdout }}/main/postgresql.conf"
+        regexp: "^#?listen_addresses"
+        line: "listen_addresses = '*'"
+        state: present
+      notify: Restart PostgreSQL
+      tags: [postgresql, config]
+    
+    # ========================================================================
+    # 5. Настройка pg_hba.conf
+    # ========================================================================
+    - name: Configure pg_hba.conf for remote access
+      lineinfile:
+        path: "/etc/postgresql/{{ pg_version.stdout }}/main/pg_hba.conf"
+        line: "host    all             all             0.0.0.0/0               md5"
+        state: present
+      notify: Restart PostgreSQL
+      tags: [postgresql, config]
+    
+    # ========================================================================
+    # 6. Запуск PostgreSQL
+    # ========================================================================
+    - name: Start and enable PostgreSQL
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+      tags: [postgresql]
+    
+    - name: Wait for PostgreSQL to be ready
+      wait_for:
+        port: 5432
+        timeout: 30
+      tags: [postgresql]
+    
+    # ========================================================================
+    # 7. Установить пароль postgres
+    # ========================================================================
+    - name: Set postgres password
+      become_user: postgres
+      command: psql -c "ALTER USER postgres WITH PASSWORD '{{ postgres_password }}';"
+      tags: [postgresql, config]
+    
+    # ========================================================================
+    # 8. Фаервол
+    # ========================================================================
+    - name: Allow PostgreSQL port in UFW
+      ufw:
+        rule: allow
+        port: "5432"
+        proto: tcp
+      ignore_errors: yes
+      tags: [firewall]
+    
+    # ========================================================================
+    # 9. Проверка Docker
+    # ========================================================================
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      failed_when: false
+      changed_when: false
+      tags: [docker, pgadmin]
+    
+    - name: Install Docker if not present
+      block:
+        - name: Install Docker prerequisites
+          apt:
+            name:
+              - apt-transport-https
+              - ca-certificates
+              - curl
+              - gnupg
+              - lsb-release
+            state: present
+        
+        - name: Add Docker GPG key
+          apt_key:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            state: present
+        
+        - name: Add Docker repository
+          apt_repository:
+            repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            state: present
+        
+        - name: Install Docker
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+            state: present
+      when: docker_check.rc != 0
+      tags: [docker, pgadmin]
+    
+    # ========================================================================
+    # 10. Установка pgAdmin
+    # ========================================================================
+    - name: Create pgAdmin data directory
+      file:
+        path: /opt/pgadmin/data
+        state: directory
+        mode: '0777'
+      tags: [pgadmin]
+    
+    - name: Remove old pgAdmin container
+      docker_container:
+        name: pgadmin4
+        state: absent
+        force_kill: yes
+      ignore_errors: yes
+      tags: [pgadmin]
+    
+    - name: Run pgAdmin container
+      docker_container:
+        name: pgadmin4
+        image: "dpage/pgadmin4:latest"
+        state: started
+        restart_policy: always
+        ports:
+          - "{{ pgadmin_port }}:80"
+        env:
+          PGADMIN_DEFAULT_EMAIL: "{{ pgadmin_email }}"
+          PGADMIN_DEFAULT_PASSWORD: "{{ pgadmin_password }}"
+        volumes:
+          - /opt/pgadmin/data:/var/lib/pgadmin
+      tags: [pgadmin]
+    
+    - name: Wait for pgAdmin to start
+      wait_for:
+        port: "{{ pgadmin_port }}"
+        timeout: 60
+      tags: [pgadmin]
+    
+    # ========================================================================
+    # 11. Открыть порт pgAdmin
+    # ========================================================================
+    - name: Allow pgAdmin port in UFW
+      ufw:
+        rule: allow
+        port: "{{ pgadmin_port }}"
+        proto: tcp
+      ignore_errors: yes
+      tags: [firewall, pgadmin]
+    
+    # ========================================================================
+    # 12. Финальная информация
+    # ========================================================================
+    - name: Show connection information
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════╗
+          ✅ SETUP COMPLETE!
+          ╠════════════════════════════════════════════════════╣
+          
+          🗄️ PostgreSQL:
+          Host: {{ ansible_default_ipv4.address | default('SERVER_IP') }}
+          Port: 5432
+          Database: postgres
+          Username: postgres
+          Password: {{ postgres_password }}
+          
+          🎮 pgAdmin:
+          URL: http://{{ ansible_default_ipv4.address | default('SERVER_IP') }}:{{ pgadmin_port }}
+          Email: {{ pgadmin_email }}
+          Password: {{ pgadmin_password }}
+          
+          🔗 Как подключиться в pgAdmin:
+          1. Откройте URL в браузере
+          2. Войдите с email/паролем
+          3. Servers → Register → Server
+          4. Name: Local PostgreSQL
+          5. Host: {{ ansible_default_ipv4.address | default('SERVER_IP') }}
+          6. Port: 5432
+          7. Username: postgres
+          8. Password: {{ postgres_password }}
+          
+          ⚠️ IMPORTANT:
+          • Откройте порты 5432 и {{ pgadmin_port }} в панели хостинга!
+          • Смените пароли после первого входа!
+          
+          ╚════════════════════════════════════════════════════╝
+      tags: [summary]
+      
+  handlers:
+    - name: Restart PostgreSQL
+      systemd:
+        name: postgresql
+        state: restarted

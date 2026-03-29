@@ -1,0 +1,61 @@
+# nginx-install-fixed.yml
+---
+- name: apt-update
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    apt_lock_timeout: 120
+    apt_retries: 3
+    apt_retry_delay: 15
+    
+  tasks:
+
+    # ========================================================================
+    # 🔧 FIX: Подготовка apt-директорий
+    # ========================================================================
+    
+    - name: Ensure apt directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      loop:
+        - /var/lib/apt/lists
+        - /var/lib/apt/lists/partial
+        - /var/cache/apt/archives
+        - /var/cache/apt/archives/partial
+        - /var/lib/dpkg
+      tags: [prepare]
+    
+    - name: Create lock files if missing
+      copy:
+        content: ""
+        dest: "{{ item }}"
+        mode: '0644'
+        force: no  # Не перезаписывать, если уже есть
+      loop:
+        - /var/lib/apt/lists/lock
+        - /var/cache/apt/archives/lock
+        - /var/lib/dpkg/lock
+      tags: [prepare]
+    
+    - name: Fix dpkg state if broken
+      command: dpkg --configure -a
+      changed_when: false
+      ignore_errors: yes
+      tags: [prepare]
+
+
+    - name: Update apt cache (with retry)
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+      register: apt_update
+      retries: "{{ apt_retries }}"
+      delay: "{{ apt_retry_delay }}"
+      until: apt_update is succeeded
+      tags: [install]

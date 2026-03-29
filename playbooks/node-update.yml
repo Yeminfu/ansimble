@@ -1,0 +1,111 @@
+---
+- name: Install Node.js LTS via NVM
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    nvm_user: "{{ ansible_user_id }}"
+    nvm_user_home: "{{ ansible_env.HOME }}"
+    nvm_dir: "{{ ansible_env.HOME }}/.nvm"
+    
+  tasks:
+    # ========================================================================
+    # 1. ПРОВЕРКА NVM
+    # ========================================================================
+    
+    - name: Check if NVM is installed
+      stat:
+        path: "{{ nvm_dir }}/nvm.sh"
+      register: nvm_check
+      tags: [check]
+    
+    - name: Fail if NVM is not installed
+      fail:
+        msg: |
+          ❌ NVM is not installed!
+          Please install NVM first.
+      when: not nvm_check.stat.exists
+      tags: [check]
+    
+    # ========================================================================
+    # 2. УСТАНОВКА LTS ВЕРСИИ
+    # ========================================================================
+    
+    - name: Install Node.js LTS via NVM
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm install {{ nvm_version }}
+        nvm use {{ nvm_version }}
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_user_home }}"
+      tags: [install]  
+    
+    # ========================================================================
+    # 3. УСТАНОВКА ПО УМОЛЧАНИЮ
+    # ========================================================================
+    
+    - name: Set LTS as default version
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm alias default node
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_user_home }}"
+      tags: [install]
+    
+    # ========================================================================
+    # 4. ПЕРЕКЛЮЧЕНИЕ НА ВЕРСИЮ
+    # ========================================================================
+    
+    - name: Use LTS version
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm use default
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_user_home }}"
+      tags: [install]
+    
+    # ========================================================================
+    # 5. ПРОВЕРКА
+    # ========================================================================
+    
+    - name: Verify Node.js and npm
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        node --version && npm --version
+      become_user: "{{ nvm_user }}"
+      environment:
+        HOME: "{{ nvm_user_home }}"
+      register: versions
+      changed_when: false
+      tags: [verify]
+    
+    # ========================================================================
+    # 6. ОТЧЁТ
+    # ========================================================================
+    
+    - name: Show installation summary
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════╗
+          ✅ NODE.JS LTS INSTALLATION COMPLETE!
+          ╠════════════════════════════════════════════════════╣
+          
+          👤 User: {{ nvm_user }}
+          📦 Node.js: {{ versions.stdout_lines[0] }}
+          📦 npm: {{ versions.stdout_lines[1] }}
+          
+          ⚡ Commands:
+          • nvm list
+          • nvm use <version>
+          • node --version
+          
+          ╚════════════════════════════════════════════════════╝
+      tags: [summary]

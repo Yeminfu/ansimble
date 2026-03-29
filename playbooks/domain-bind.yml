@@ -1,0 +1,296 @@
+# domain-bind-final.yml
+---
+- name: Bind Domain with SSL (FINAL FIX)
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    domain_name: "site.name"
+    domain_www: "www.site.name"
+    ssl_email: "admin@site.name"
+    app_port: 3000
+    certbot_webroot: /var/www/certbot
+
+  tasks:
+    # ========================================================================
+    # 1. ПРОВЕРКА DNS И ДОСТУПНОСТИ
+    # ========================================================================
+    
+    - name: Check DNS for both domains
+      command: dig +short {{ item }}
+      loop:
+        - "{{ domain_name }}"
+        - "{{ domain_www }}"
+      register: dns_results
+      changed_when: false
+      failed_when: false
+      tags: [check]
+    
+    - name: Show DNS status
+      debug:
+        msg: |
+          🔍 DNS Check:
+          {% for result in dns_results.results %}
+          • {{ result.item }} → {{ result.stdout | default('NOT RESOLVED') }}
+          {% endfor %}
+          
+          ⚠️ Both domains MUST point to {{ ansible_default_ipv4.address }}!
+      tags: [check]
+    
+    - name: Check if port 80 is accessible
+      wait_for:
+        port: 80
+        host: "0.0.0.0"
+        timeout: 5
+      ignore_errors: yes
+      register: port_check
+      tags: [check]
+    
+    - name: Warn if port 80 not accessible
+      debug:
+        msg: |
+          ⚠️ Port 80 may not be accessible from outside!
+          Check firewall: sudo ufw allow 'Nginx HTTP'
+          Check provider firewall panel
+      when: port_check.failed | default(true)
+      tags: [check]
+    
+    # ========================================================================
+    # 2. NGINX + CERTBOT
+    # ========================================================================
+    
+    - name: Install Nginx and Certbot
+      apt:
+        name: [nginx, certbot, python3-certbot-nginx]
+        state: present
+        update_cache: yes
+      tags: [install]
+    
+    - name: Ensure Nginx is running
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+      tags: [install]
+    
+    # ========================================================================
+    # 3. NGINX CONFIG WITH PROPER ACME LOCATION
+    # ========================================================================
+    
+    - name: Create Nginx config with correct ACME handling
+      copy:
+        content: |
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name {{ domain_name }} {{ domain_www }};
+              
+              # ✅ ACME challenge — MUST be first and use alias!
+              location ^~ /.well-known/acme-challenge/ {
+                  alias /var/www/certbot/.well-known/acme-challenge/;
+                  default_type "text/plain";
+              }
+              
+              # Proxy to Next.js for everything else
+              location / {
+                  proxy_pass http://localhost:{{ app_port }};
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_cache_bypass $http_upgrade;
+              }
+          }
+        dest: /etc/nginx/sites-available/{{ domain_name }}.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload Nginx
+      tags: [nginx]
+    
+    - name: Enable site and cleanup
+      file:
+        path: "{{ item }}"
+        state: "{{ 'link' if 'sites-enabled' in item else 'absent' }}"
+        src: "/etc/nginx/sites-available/{{ domain_name }}.conf"
+        dest: "/etc/nginx/sites-enabled/{{ domain_name }}.conf"
+      loop:
+        - "/etc/nginx/sites-enabled/{{ domain_name }}.conf"
+        - "/etc/nginx/sites-enabled/default"
+      notify: Reload Nginx
+      tags: [nginx]
+    
+    - name: Create certbot webroot directory
+      file:
+        path: "{{ certbot_webroot }}/.well-known/acme-challenge"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+      tags: [ssl]
+    
+    # ========================================================================
+    # 4. TEST ACME LOCATION BEFORE CERTBOT
+    # ========================================================================
+    
+    - name: Create test challenge file
+      copy:
+        content: "ansible-test-{{ ansible_date_time.epoch }}"
+        dest: "{{ certbot_webroot }}/.well-known/acme-challenge/ansible-test"
+        mode: '0644'
+      tags: [ssl, test]
+    
+    - name: Test challenge file locally
+      command: curl -s http://localhost/.well-known/acme-challenge/ansible-test
+      register: local_test
+      changed_when: false
+      failed_when: false
+      tags: [ssl, test]
+    
+    - name: Show local test result
+      debug:
+        msg: |
+          🔍 Local test: {% if local_test.rc == 0 %}✅ OK{% else %}❌ FAILED{% endif %}
+          Response: {{ local_test.stdout | default('No response') }}
+      tags: [ssl, test]
+    
+    - name: Clean up test file
+      file:
+        path: "{{ certbot_webroot }}/.well-known/acme-challenge/ansible-test"
+        state: absent
+      tags: [ssl, test]
+    
+    # ========================================================================
+    # 5. GET CERTIFICATE (with retry)
+    # ========================================================================
+    
+    # - name: Obtain SSL certificate (with retry)
+    #   command: >
+    #     certbot certonly --webroot
+    #     --agree-tos
+    #     --email {{ ssl_email }}
+    #     --non-interactive
+    #     --webroot-path {{ certbot_webroot }}
+    #     -d {{ domain_name }}
+    #     -d {{ domain_www }}
+    #   register: certbot_result
+    #   retries: 2
+    #   delay: 10
+    #   until: certbot_result.rc == 0
+    #   args:
+    #     creates: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
+    #   tags: [ssl]
+    
+    # ========================================================================
+    # 6. UPDATE CONFIG WITH SSL + AUTO-RENEWAL
+    # ========================================================================
+    
+    # - name: Update Nginx config with SSL (after cert obtained)
+    #   copy:
+    #     content: |
+    #       # HTTP → HTTPS redirect
+    #       server {
+    #           listen 80;
+    #           listen [::]:80;
+    #           server_name {{ domain_name }} {{ domain_www }};
+              
+    #           location ^~ /.well-known/acme-challenge/ {
+    #               alias /var/www/certbot/.well-known/acme-challenge/;
+    #               default_type "text/plain";
+    #           }
+              
+    #           location / {
+    #               return 301 https://$server_name$request_uri;
+    #           }
+    #       }
+          
+    #       # HTTPS server
+    #       server {
+    #           listen 443 ssl http2;
+    #           listen [::]:443 ssl http2;
+    #           server_name {{ domain_name }} {{ domain_www }};
+              
+    #           ssl_certificate /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem;
+    #           ssl_certificate_key /etc/letsencrypt/live/{{ domain_name }}/privkey.pem;
+              
+    #           ssl_protocols TLSv1.2 TLSv1.3;
+    #           ssl_ciphers HIGH:!aNULL:!MD5;
+    #           ssl_stapling on;
+    #           ssl_stapling_verify on;
+              
+    #           add_header Strict-Transport-Security "max-age=31536000" always;
+              
+    #           location / {
+    #               proxy_pass http://localhost:{{ app_port }};
+    #               proxy_http_version 1.1;
+    #               proxy_set_header Host $host;
+    #               proxy_set_header X-Real-IP $remote_addr;
+    #               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    #               proxy_set_header X-Forwarded-Proto $scheme;
+    #           }
+    #       }
+    #     dest: /etc/nginx/sites-available/{{ domain_name }}.conf
+    #     owner: root
+    #     group: root
+    #     mode: '0644'
+    #   notify: Reload Nginx
+    #   when: certbot_result.rc == 0
+    #   tags: [nginx, ssl]
+    
+    # - name: Setup auto-renewal cron
+    #   cron:
+    #     name: "Certbot renewal"
+    #     minute: "0"
+    #     hour: "3"
+    #     job: "certbot renew --quiet --post-hook 'systemctl reload nginx'"
+    #   tags: [ssl]
+    
+    # ========================================================================
+    # 7. FINAL CHECK + REPORT
+    # ========================================================================
+    
+    # - name: Verify SSL certificate
+    #   command: openssl s_client -connect {{ domain_name }}:443 -servername {{ domain_name }}
+    #   register: ssl_verify
+    #   changed_when: false
+    #   failed_when: false
+    #   ignore_errors: yes
+    #   when: certbot_result.rc == 0
+    #   tags: [verify]
+    
+    # - name: Show final status
+    #   debug:
+    #     msg: |
+    #       ╔════════════════════════════════════════════════════╗
+    #       {% if certbot_result.rc == 0 %}
+    #       ✅ SSL CERTIFICATE OBTAINED!
+    #       {% else %}
+    #       ❌ CERTBOT FAILED - Check DNS and firewall!
+    #       {% endif %}
+    #       ╠════════════════════════════════════════════════════╣
+          
+    #       🌐 Domain: https://{{ domain_name }}
+    #       📧 Email: {{ ssl_email }}
+    #       📁 Cert path: /etc/letsencrypt/live/{{ domain_name }}/
+          
+    #       ⚡ Next steps:
+    #       1. Ensure DNS: site.name AND www.site.name → {{ ansible_default_ipv4.address }}
+    #       2. Ensure port 80 is open to the internet
+    #       3. Wait 5-30 min for DNS propagation
+    #       4. Re-run this playbook
+          
+    #       🔍 Debug commands:
+    #       • dig +short site.name www.site.name
+    #       • curl -I http://site.name/.well-known/acme-challenge/test
+    #       • sudo tail -f /var/log/letsencrypt/letsencrypt.log
+          
+    #       ╚════════════════════════════════════════════════════╝
+    #   tags: [summary]
+      
+  handlers:
+    - name: Reload Nginx
+      systemd:
+        name: nginx
+        state: reloaded

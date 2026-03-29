@@ -1,0 +1,107 @@
+# nginx-install-fixed.yml
+---
+- name: Install Nginx with apt lock fix
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  vars:
+    apt_lock_timeout: 120
+    apt_retries: 3
+    apt_retry_delay: 15
+    
+  tasks:
+
+    
+    # ========================================================================
+    # 🔄 Ожидание освобождения блокировок
+    # ========================================================================
+    
+    # - name: Wait for apt lock to be released
+    #   wait_for:
+    #     path: /var/lib/dpkg/lock
+    #     state: absent
+    #     timeout: "{{ apt_lock_timeout }}"
+    #   ignore_errors: yes
+    #   tags: [prepare]
+    
+    # - name: Wait for apt lists lock
+    #   wait_for:
+    #     path: /var/lib/apt/lists/lock
+    #     state: absent
+    #     timeout: "{{ apt_lock_timeout }}"
+    #   ignore_errors: yes
+    #   tags: [prepare]
+    
+    # ========================================================================
+    # 📦 Обновление и установка
+    # ========================================================================
+
+    
+    - name: Install Nginx (with retry)
+      apt:
+        name: nginx
+        state: present
+      register: apt_install
+      retries: "{{ apt_retries }}"
+      delay: "{{ apt_retry_delay }}"
+      until: apt_install is succeeded
+      tags: [install]
+    
+    - name: Ensure Nginx is running
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+      tags: [install]
+    
+    # ========================================================================
+    # 🔥 Фаервол
+    # ========================================================================
+    
+    - name: Configure UFW
+      block:
+        - name: Install UFW
+          apt:
+            name: ufw
+            state: present
+        
+        - name: Allow Nginx and SSH
+          ufw:
+            rule: allow
+            name: "{{ item }}"
+          loop:
+            - 'Nginx HTTP'
+            - 'OpenSSH'
+      tags: [firewall]
+    
+    # ========================================================================
+    # ✅ Проверка и отчёт
+    # ========================================================================
+    
+    # - name: Verify installation
+    #   block:
+    #     - name: Test nginx config
+    #       command: nginx -t
+    #       register: nginx_test
+    #       changed_when: false
+        
+    #     - name: Get nginx version
+    #       command: nginx -v
+    #       register: nginx_version
+    #       changed_when: false
+    #   tags: [verify]
+    
+    # - name: Show success message
+    #   debug:
+    #     msg: |
+    #       ╔════════════════════════════════════════╗
+    #       ✅ NGINX INSTALLED SUCCESSFULLY!
+    #       ╠════════════════════════════════════════╣
+    #       ``
+    #       🌐 URL: http://{{ ansible_default_ipv4.address }}
+    #       📊 Version: {{ nginx_version.stderr | regex_replace('nginx/', '') }}
+    #       ✅ Config: {{ 'OK' if nginx_test.rc == 0 else 'FAILED' }}
+          
+    #       ╚════════════════════════════════════════╝
+    #   tags: [summary]
