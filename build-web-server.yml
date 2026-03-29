@@ -1,26 +1,26 @@
+- import_playbook: playbooks/install-docker.yml
 - import_playbook: playbooks/apt-update.yml
+- import_playbook: playbooks/set-nginx.yml
+  vars:
+    nvm_version: "0.39.7"
 
-# - import_playbook: playbooks/set-nginx.yml
-#   vars:
-#     nvm_version: "0.39.7"
+- import_playbook: playbooks/install-nvm.yml
 
-# - import_playbook: playbooks/install-nvm.yml
+- import_playbook: playbooks/node-update.yml
+  vars:
+    nvm_version: "25.6.1"
 
-# - import_playbook: playbooks/node-update.yml
-#   vars:
-#     nvm_version: "25.6.1"
+- import_playbook: playbooks/nextjs-update.yml
+  vars:
+    nvm_version: "0.39.7"
 
-# - import_playbook: playbooks/nextjs-update.yml
-#   vars:
-#     nvm_version: "0.39.7"
+- import_playbook: playbooks/domain-bind.yml
 
-# - import_playbook: playbooks/domain-bind.yml
+# заблокировано на 2 дня
+- import_playbook: playbooks/serticicates.yml
 
-# # заблокировано на 2 дня
-# - import_playbook: playbooks/serticicates.yml
+- import_playbook: playbooks/install-pm2.yml
 
-# - import_playbook: playbooks/install-pm2.yml
+- import_playbook: playbooks/start-pm2.yml 
 
-# - import_playbook: playbooks/start-pm2.yml 
-
-# - import_playbook: playbooks/pgadmin-setup.yml
+- import_playbook: playbooks/pgadmin-setup.yml

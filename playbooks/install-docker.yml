@@ -1,0 +1,15 @@
+---
+- name: Установка Docker одной командой
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: Install Docker (official script)
+      shell: |
+        curl -fsSL https://get.docker.com -o get-docker.sh && \
+        sh get-docker.sh && \
+        usermod -aG docker {{ ansible_user }} && \
+        rm -f get-docker.sh
+      args:
+        executable: /bin/bash
